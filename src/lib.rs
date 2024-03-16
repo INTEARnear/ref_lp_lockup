@@ -48,6 +48,9 @@ impl LockupContract {
     #[payable]
     pub fn register_lockup(&mut self) {
         require!(env::attached_deposit() == STORAGE_DEPOSIT, "Attached deposit is not equal to the storage cost");
+        if self.lockups.contains_key(&env::predecessor_account_id()) {
+            panic!("Lockup already exists");
+        }
         let lockup = Lockup {
             amount: 0.into(),
             duration_ns: 0.into(),
@@ -63,8 +66,9 @@ impl LockupContract {
         amount: U128,
         msg: String,
     ) -> PromiseOrValue<U128> {
+        require!(env::predecessor_account_id() == self.ref_address, "Only the ref finance tokens are supported");
         require!(token_id == format!(":{}", self.pool_id.0));
-        let duration_ns: U64 = msg.parse::<u64>().unwrap().into();
+        let duration_ns: U64 = msg.parse::<u64>().unwrap().into(); // Ref will refund the deposit if msg is not valid
         let mut lockup = Lockup {
             amount,
             duration_ns,
@@ -74,7 +78,7 @@ impl LockupContract {
             if l.timestamp.0 + l.duration_ns.0 <= env::block_timestamp() + duration_ns.0 {
                 lockup.amount = (lockup.amount.0 + l.amount.0).into();
             } else {
-                panic!("Trying to add more funds with date earlier than the previous lockup expiration date.");
+                panic!("Trying to extend a lockup with new expiration date before the existing lockup expiration date.");
             }
         }
         self.lockups.insert(sender_id, lockup);
@@ -110,17 +114,17 @@ impl LockupContract {
     }
 
     #[payable]
-    pub fn set_audited(&mut self, audited: bool) {
+    pub fn set_audited(&mut self) {
         assert_one_yocto();
         require!(env::predecessor_account_id() == "slimedragon.near".parse::<AccountId>().unwrap());
-        self.audited = audited;
+        self.audited = true;
     }
 
     #[private]
     pub fn withdraw_callback(&mut self, account_id: AccountId, lockup: Lockup, #[callback_result] call_result: Result<(), PromiseError>) {
         if let Err(_) = call_result {
             log!("Withdraw failed");
-            self.lockups.insert(account_id, lockup);
+            self.lockups.insert(account_id, lockup); // If someone locks liquidity during the withdrawal, they're stupid, I don't want to support that, but maybe I'll add a check to refund or merge the deposits before doing an audit.
         } else {
             log!("Withdrawn {} shares", lockup.amount.0);
         }
